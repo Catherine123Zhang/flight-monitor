@@ -3,7 +3,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   SERPAPI_KEY: string;
   RAPIDAPI_KEY: string;
-  CLAUDE_API_KEY: string;
+  DEEPSEEK_API_KEY: string;
   NOTIFY_EMAIL: string;
   EMAIL_FROM: string;
 }

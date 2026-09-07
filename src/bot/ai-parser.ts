@@ -1,23 +1,21 @@
 /**
  * AI 自然语言解析器
- * 用 Claude API 把用户的自然语言转成结构化的监控参数
+ * 用 DeepSeek API 把用户的自然语言转成结构化的监控参数
+ * 比 Claude 便宜很多，效果够用
  */
 
 import type { Env } from '../types';
 
 export interface ParsedIntent {
   action: 'add_route' | 'list' | 'delete' | 'check' | 'help' | 'chat';
-  // add_route 用到的字段
-  origins?: string[];       // IATA codes, 可以多个
-  destination?: string;     // IATA code
-  date_from?: string;       // YYYY-MM-DD
-  date_to?: string;         // YYYY-MM-DD
-  max_price?: number;       // 人民币
+  origins?: string[];
+  destination?: string;
+  date_from?: string;
+  date_to?: string;
+  max_price?: number;
   adults?: number;
   children?: number;
-  // delete 用到的
   route_id?: number;
-  // AI 的回复（给用户看的）
   reply?: string;
 }
 
@@ -48,39 +46,39 @@ export async function parseUserIntent(
   text: string,
   env: Env
 ): Promise<ParsedIntent> {
-  if (!env.CLAUDE_API_KEY) {
-    // fallback 到基础解析
+  if (!env.DEEPSEEK_API_KEY) {
     return { action: 'chat', reply: 'AI 解析未配置，请用 /help 查看命令格式' };
   }
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': env.CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01',
+        'Authorization': `Bearer ${env.DEEPSEEK_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'deepseek-chat',
         max_tokens: 500,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: text }],
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: text },
+        ],
       }),
     });
 
     if (!resp.ok) {
-      console.error(`Claude API error: ${resp.status}`);
+      console.error(`DeepSeek API error: ${resp.status}`);
       return { action: 'chat', reply: '理解失败，请再说一次或用 /help 查看命令' };
     }
 
     const data = (await resp.json()) as {
-      content: { type: string; text: string }[];
+      choices: { message: { content: string } }[];
     };
 
-    const responseText = data.content?.[0]?.text || '';
-
-    // 解析 JSON（处理可能的 markdown 包裹）
+    const responseText = data.choices?.[0]?.message?.content || '';
     const jsonStr = responseText.replace(/```json\s*|```/g, '').trim();
     const parsed = JSON.parse(jsonStr) as ParsedIntent;
 
