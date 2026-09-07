@@ -12,6 +12,16 @@ import type { Env, TelegramUpdate } from './types';
 import { handleWebhook } from './bot/telegram';
 import { checkAllRoutes } from './monitor/checker';
 
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'content-type': 'application/json',
+      'access-control-allow-origin': '*',
+    },
+  });
+}
+
 export default {
   /**
    * HTTP 请求处理
@@ -127,7 +137,65 @@ export default {
       });
     }
 
-    return new Response('Flight Monitor API\n\nEndpoints:\n- POST /webhook\n- GET /health\n- GET /setup-webhook\n- POST /trigger-check\n- GET /api/routes?chat_id=xxx\n- GET /api/prices?route_id=xxx', {
+    // API: Web UI 添加监控航线
+    if (url.pathname === '/api/add-route' && request.method === 'POST') {
+      const body = (await request.json()) as {
+        chat_id: string; origin: string; destination: string;
+        date_from: string; date_to: string; max_price: number;
+      };
+
+      const user = await env.DB.prepare(
+        'SELECT id FROM users WHERE telegram_chat_id = ?'
+      ).bind(body.chat_id).first<{ id: number }>();
+
+      if (!user) {
+        // 自动创建用户（Web 端注册）
+        await env.DB.prepare(
+          'INSERT INTO users (telegram_chat_id, name) VALUES (?, ?)'
+        ).bind(body.chat_id, 'Web User').run();
+        const newUser = await env.DB.prepare(
+          'SELECT id FROM users WHERE telegram_chat_id = ?'
+        ).bind(body.chat_id).first<{ id: number }>();
+
+        if (!newUser) {
+          return jsonResponse({ error: '创建用户失败' }, 500);
+        }
+
+        await env.DB.prepare(
+          `INSERT INTO routes (user_id, origin, destination, date_from, date_to, max_price)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(newUser.id, body.origin.toUpperCase(), body.destination.toUpperCase(),
+          body.date_from, body.date_to, body.max_price).run();
+      } else {
+        await env.DB.prepare(
+          `INSERT INTO routes (user_id, origin, destination, date_from, date_to, max_price)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(user.id, body.origin.toUpperCase(), body.destination.toUpperCase(),
+          body.date_from, body.date_to, body.max_price).run();
+      }
+
+      return jsonResponse({ ok: true });
+    }
+
+    // API: Web UI 删除监控航线
+    if (url.pathname === '/api/delete-route' && request.method === 'POST') {
+      const body = (await request.json()) as { chat_id: string; route_id: number };
+
+      const user = await env.DB.prepare(
+        'SELECT id FROM users WHERE telegram_chat_id = ?'
+      ).bind(body.chat_id).first<{ id: number }>();
+
+      if (!user) return jsonResponse({ error: 'user not found' }, 404);
+
+      await env.DB.prepare(
+        'UPDATE routes SET is_active = 0 WHERE id = ? AND user_id = ?'
+      ).bind(body.route_id, user.id).run();
+
+      return jsonResponse({ ok: true });
+    }
+
+    // 默认：静态资源由 assets 处理，如果走到这说明是未知 API 路径
+    return new Response('Flight Monitor API — visit / for dashboard', {
       status: 200,
     });
   },

@@ -134,9 +134,14 @@ async function checkRoute(
     'UPDATE routes SET last_checked_at = datetime("now") WHERE id = ?'
   ).bind(route.id).run();
 
-  // 判断是否触发告警
-  if (cheapest.price <= route.max_price) {
-    await triggerAlert(route, cheapest, top5, env);
+  // 判断是否触发告警 — 两个条件满足任一即推送：
+  // 1. 价格低于用户设定阈值
+  // 2. Google 标记为 "low"（低于市场价）
+  const isBelowThreshold = cheapest.price <= route.max_price;
+  const isBelowMarket = cheapest.price_level === 'low';
+
+  if (isBelowThreshold || isBelowMarket) {
+    await triggerAlert(route, cheapest, top5, env, { isBelowThreshold, isBelowMarket });
   }
 }
 
@@ -147,7 +152,8 @@ async function triggerAlert(
   route: Route & { telegram_chat_id: string },
   cheapest: FlightResult,
   top5: FlightResult[],
-  env: Env
+  env: Env,
+  reason: { isBelowThreshold: boolean; isBelowMarket: boolean }
 ): Promise<void> {
   // 检查最近 12 小时内是否已发过类似价格的告警（防刷屏）
   const recentAlert = await env.DB.prepare(
@@ -164,7 +170,16 @@ async function triggerAlert(
   // 构造推送消息
   const origin = getAirportName(route.origin);
   const dest = getAirportName(route.destination!);
-  const _emoji = priceLevelEmoji(cheapest.price_level ?? null);
+
+  // 告警原因说明
+  let reasonText = '';
+  if (reason.isBelowMarket && reason.isBelowThreshold) {
+    reasonText = `🟢 低于市场价 + 低于你的阈值 ${formatPrice(route.max_price)}`;
+  } else if (reason.isBelowMarket) {
+    reasonText = `🟢 Google 标记为低于市场价（当前价 ${formatPrice(cheapest.price)}，你的阈值 ${formatPrice(route.max_price)}）`;
+  } else {
+    reasonText = `💰 低于你的阈值 ${formatPrice(route.max_price)}`;
+  }
 
   let msg = `🎉 *低价机票发现！*\n\n`;
   msg += `✈️ ${origin} → ${dest}\n`;
@@ -172,7 +187,7 @@ async function triggerAlert(
   if (route.date_from !== route.date_to) msg += ` ~ ${route.date_to}`;
   msg += `\n`;
   msg += `👨‍👩‍👧 ${route.adults}大${route.children > 0 ? route.children + '小' : ''}\n`;
-  msg += `💰 阈值: ${formatPrice(route.max_price)}\n\n`;
+  msg += `${reasonText}\n\n`;
 
   msg += `*最低价 Top 5:*\n`;
   for (let i = 0; i < top5.length; i++) {
