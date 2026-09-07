@@ -1,0 +1,23 @@
+{
+  "name": "flight-monitor",
+  "version": "1.0.0",
+  "description": "Flight price monitor — multi-source aggregation (SerpApi + Skyscanner + Spring Airlines) with Telegram alerts, powered by Cloudflare Workers + D1",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create flight-monitor-db",
+    "db:migrate:local": "wrangler d1 migrations apply flight-monitor-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply flight-monitor-db --remote",
+    "tail": "wrangler tail",
+    "test-cron": "curl http://localhost:8787/__scheduled?cron=0+*/6+*+*+*"
+  },
+  "keywords": ["flight", "monitor", "cheap-flights", "telegram-bot", "cloudflare-workers"],
+  "author": "Vivian Zhang",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260907.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.129.0"
+  }
+}

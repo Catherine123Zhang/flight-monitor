@@ -1,0 +1,21 @@
+{
+  "name": "flight-monitor",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "triggers": {
+    // 每6小时查一次价格 (UTC: 0:00, 6:00, 12:00, 18:00 → 北京时间 8:00, 14:00, 20:00, 2:00)
+    "crons": ["0 0,6,12,18 * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "flight-monitor-db",
+      "database_id": "placeholder"
+    }
+  ],
+  "vars": {
+    "TELEGRAM_BOT_TOKEN": "",
+    "SERPAPI_KEY": "",
+    "RAPIDAPI_KEY": ""
+  }
+}
