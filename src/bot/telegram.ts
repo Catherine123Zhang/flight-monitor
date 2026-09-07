@@ -13,6 +13,7 @@
  */
 
 import type { Env, TelegramUpdate, TelegramMessage, Route, PriceRecord } from '../types';
+import { parseUserIntent } from './ai-parser';
 import { DEPARTURE_AIRPORTS, POPULAR_DESTINATIONS, searchAirport, getAirportName, formatPrice, formatDuration } from '../utils/airports';
 import { checkAllRoutes } from '../monitor/checker';
 
@@ -93,17 +94,12 @@ async function handleStart(env: Env, chatId: string, name: string) {
   await sendMessage(
     env.TELEGRAM_BOT_TOKEN,
     chatId,
-    `👋 你好${name ? ' ' + name : ''}！我是机票监控机器人 ✈️\n\n` +
-    `我会帮你盯着机票价格，便宜了立刻通知你。\n\n` +
-    `*快速开始:*\n` +
-    `输入类似这样的文字就行：\n` +
-    `\`宁波飞三亚 10月 500以内\`\n` +
-    `\`杭州飞曼谷 11月1日-15日 2000\`\n\n` +
-    `或者用命令：\n` +
-    `/add NGB SYX 2026-10-01 2026-10-31 500\n` +
-    `/list — 查看所有监控\n` +
-    `/airports — 支持的机场\n` +
-    `/help — 完整帮助`,
+    `👋 你好${name ? ' ' + name : ''}！我是机票监控助手 ✈️\n\n` +
+    `直接跟我说话就行，比如：\n\n` +
+    `"国庆后带娃去三亚，帮我盯便宜的"\n` +
+    `"十一月想去曼谷，2000以内"\n` +
+    `"看看清迈的机票"\n\n` +
+    `我会自动帮你从宁波、杭州、上海三个机场找最便宜的，低于市场价就通知你 🔔`,
     'Markdown'
   );
 }
@@ -357,107 +353,77 @@ async function handleAirports(env: Env, chatId: string) {
 }
 
 /**
- * 自然语言解析（简单版）
- * 支持: "宁波飞三亚 10月 500以内"
+ * AI 自然语言处理 — 用 Claude 理解用户意图
+ * 用户随便说，AI 解析成结构化操作
  */
 async function handleNaturalInput(env: Env, chatId: string, text: string) {
-  // 匹配模式: <城市>飞/到<城市> <月份/日期> <价格>
-  const flyMatch = text.match(/([\u4e00-\u9fa5]+)\s*(?:飞|到|去|→)\s*([\u4e00-\u9fa5]+)/);
-  if (!flyMatch) {
-    await sendMessage(
-      env.TELEGRAM_BOT_TOKEN,
-      chatId,
-      `🤔 没听懂，试试这样说：\n` +
-      `\`宁波飞三亚 10月 500以内\`\n` +
-      `\`杭州去曼谷 11月1日-15日 2000\`\n\n` +
-      `或输入 /help 查看完整帮助`,
-      'Markdown'
-    );
-    return;
+  // 调 Claude 解析意图
+  const intent = await parseUserIntent(text, env);
+
+  switch (intent.action) {
+    case 'add_route': {
+      const user = await getUser(env, chatId);
+      if (!user) return;
+
+      const origins = intent.origins || ['NGB', 'HGH', 'PVG', 'SHA'];
+      const dest = intent.destination || '';
+      const dateFrom = intent.date_from || '';
+      const dateTo = intent.date_to || '';
+      const maxPrice = intent.max_price || 1000;
+      const adults = intent.adults || 1;
+      const children = intent.children || 0;
+
+      if (!dest || !dateFrom || !dateTo) {
+        await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, intent.reply || '信息不够完整，能再说具体点吗？比如去哪、什么时候');
+        return;
+      }
+
+      // 为每个出发机场创建监控
+      const insertStmt = env.DB.prepare(
+        `INSERT INTO routes (user_id, origin, destination, date_from, date_to, max_price, adults, children)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      await env.DB.batch(
+        origins.map(origin =>
+          insertStmt.bind(user.id, origin, dest, dateFrom, dateTo, maxPrice, adults, children)
+        )
+      );
+
+      // 用 AI 生成的自然回复
+      let reply = intent.reply || '✅ 监控已添加！';
+      reply += `\n\n📊 已创建 ${origins.length} 条监控（${origins.map(o => getAirportName(o)).join('、')} → ${getAirportName(dest)}）`;
+      reply += `\n⏰ 每天早上 8:00 自动查价`;
+
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, reply);
+      break;
+    }
+
+    case 'list':
+      await handleList(env, chatId);
+      break;
+
+    case 'delete':
+      if (intent.route_id) {
+        await handleDelete(env, chatId, `/del ${intent.route_id}`);
+      } else {
+        await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, '要删除哪条？告诉我编号，或者说"看看列表"先查一下');
+      }
+      break;
+
+    case 'check':
+      await handleCheck(env, chatId, '/check');
+      break;
+
+    case 'help':
+      await handleHelp(env, chatId);
+      break;
+
+    case 'chat':
+    default:
+      // AI 闲聊回复
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, intent.reply || '你可以告诉我想去哪玩，我帮你盯机票 ✈️');
+      break;
   }
-
-  const originCity = flyMatch[1];
-  const destCity = flyMatch[2];
-
-  // 匹配机场
-  const originAirports = searchAirport(originCity);
-  const destAirports = searchAirport(destCity);
-
-  if (originAirports.length === 0) {
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `❌ 找不到"${originCity}"对应的机场\n输入 /airports 查看支持的机场`);
-    return;
-  }
-  if (destAirports.length === 0) {
-    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `❌ 找不到"${destCity}"对应的机场\n输入 /airports 查看支持的机场`);
-    return;
-  }
-
-  const origin = originAirports[0].iata;
-  const dest = destAirports[0].iata;
-
-  // 解析月份/日期
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  let dateFrom: string;
-  let dateTo: string;
-
-  const monthMatch = text.match(/(\d{1,2})月/);
-  const dateRangeMatch = text.match(/(\d{1,2})月(\d{1,2})日?\s*[-~到]\s*(\d{1,2})日?/);
-  const fullDateMatch = text.match(/(\d{4})-(\d{2})-(\d{2})/);
-
-  if (dateRangeMatch) {
-    const month = dateRangeMatch[1].padStart(2, '0');
-    const dayFrom = dateRangeMatch[2].padStart(2, '0');
-    const dayTo = dateRangeMatch[3].padStart(2, '0');
-    dateFrom = `${currentYear}-${month}-${dayFrom}`;
-    dateTo = `${currentYear}-${month}-${dayTo}`;
-  } else if (fullDateMatch) {
-    dateFrom = `${fullDateMatch[1]}-${fullDateMatch[2]}-${fullDateMatch[3]}`;
-    dateTo = dateFrom;
-  } else if (monthMatch) {
-    const month = monthMatch[1].padStart(2, '0');
-    dateFrom = `${currentYear}-${month}-01`;
-    const lastDay = new Date(currentYear, parseInt(month), 0).getDate();
-    dateTo = `${currentYear}-${month}-${lastDay}`;
-  } else {
-    // 默认下个月
-    const next = new Date(now);
-    next.setMonth(next.getMonth() + 1);
-    const month = String(next.getMonth() + 1).padStart(2, '0');
-    dateFrom = `${next.getFullYear()}-${month}-01`;
-    const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
-    dateTo = `${next.getFullYear()}-${month}-${lastDay}`;
-  }
-
-  // 解析价格
-  const priceMatch = text.match(/(\d+)\s*(?:以内|以下|块|元|¥|rmb)?/i);
-  const maxPrice = priceMatch ? parseInt(priceMatch[1]) : 1000;
-
-  // 如果价格看起来不合理（太大或太小），设默认值
-  const finalPrice = maxPrice > 50 && maxPrice < 50000 ? maxPrice : 1000;
-
-  // 创建监控
-  const user = await getUser(env, chatId);
-  if (!user) return;
-
-  await env.DB.prepare(
-    `INSERT INTO routes (user_id, origin, destination, date_from, date_to, max_price)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(user.id, origin, dest, dateFrom, dateTo, finalPrice).run();
-
-  const originName = getAirportName(origin);
-  const destName = getAirportName(dest);
-
-  await sendMessage(
-    env.TELEGRAM_BOT_TOKEN,
-    chatId,
-    `✅ 监控已添加！\n\n` +
-    `✈️ ${originName} → ${destName}\n` +
-    `📅 ${dateFrom} ~ ${dateTo}\n` +
-    `💰 低于 ${formatPrice(finalPrice)} 时通知你\n\n` +
-    `⏰ 每 6 小时自动查价\n` +
-    `📝 /list 查看所有监控 | /check 立即查价`
-  );
 }
 
 // ============ 工具函数 ============
